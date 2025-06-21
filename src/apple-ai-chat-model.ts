@@ -208,7 +208,7 @@ export class AppleAIChatLanguageModel implements LanguageModelV2 {
             toolCallType: "function",
             toolCallId: call.id,
             toolName: call.function.name,
-            input: JSON.parse(call.function.arguments),
+            input: call.function.arguments, // Keep as string - Vercel AI SDK will parse it
           })
         );
 
@@ -503,7 +503,15 @@ export class AppleAIChatLanguageModel implements LanguageModelV2 {
           return {
             id: part.toolCallId,
             toolName: part.toolName,
-            segments: [{ type: "text", text: JSON.stringify(part.output) }],
+            segments: [
+              {
+                type: "text",
+                text:
+                  typeof part.output === "string"
+                    ? part.output
+                    : JSON.stringify(part.output),
+              },
+            ],
           };
         }
         return null;

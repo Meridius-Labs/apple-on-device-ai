@@ -102,6 +102,63 @@ public func appleAIFreeString(ptr: UnsafeMutablePointer<CChar>?) {
     }
 }
 
+// MARK: - Debug Logging
+
+private func debugPrintTranscript(_ transcript: Transcript, prompt: String) {
+    print("\n=== DEBUG: TRANSCRIPT SENT TO APPLE INTELLIGENCE ===")
+    print("Current Prompt: '\(prompt)'")
+    print("Transcript Entries (\(transcript.entries.count)):")
+
+    for (index, entry) in transcript.entries.enumerated() {
+        print("  [\(index)] \(describeTranscriptEntry(entry))")
+    }
+    print("=== END DEBUG TRANSCRIPT ===\n")
+}
+
+private func describeTranscriptEntry(_ entry: Transcript.Entry) -> String {
+    switch entry {
+    case .instructions(let instructions):
+        let toolNames = instructions.toolDefinitions.map { $0.name }.joined(separator: ", ")
+        let content = instructions.segments.compactMap { segment in
+            if case .text(let textSegment) = segment {
+                return textSegment.content
+            }
+            return nil
+        }.joined(separator: " ")
+        return "INSTRUCTIONS: '\(content)' | Tools: [\(toolNames)]"
+
+    case .prompt(let prompt):
+        let content = prompt.segments.compactMap { segment in
+            if case .text(let textSegment) = segment {
+                return textSegment.content
+            }
+            return nil
+        }.joined(separator: " ")
+        return "PROMPT: '\(content)'"
+
+    case .response(let response):
+        let content = response.segments.compactMap { segment in
+            if case .text(let textSegment) = segment {
+                return textSegment.content
+            }
+            return nil
+        }.joined(separator: " ")
+        return "RESPONSE: '\(content)'"
+
+    case .toolOutput(let toolOutput):
+        let content = toolOutput.segments.compactMap { segment in
+            if case .text(let textSegment) = segment {
+                return textSegment.content
+            }
+            return nil
+        }.joined(separator: " ")
+        return "TOOL_OUTPUT [\(toolOutput.toolName)]: '\(content)'"
+
+    @unknown default:
+        return "UNKNOWN_ENTRY"
+    }
+}
+
 // MARK: - Helper functions
 
 /// Centralized conversation preparation logic used by all message-based functions
@@ -122,6 +179,9 @@ private func prepareConversationContext(
     temperature: Double,
     maxTokens: Int32
 ) throws -> ConversationContext {
+    print("\n=== DEBUG: PARSING MESSAGES ===")
+    print("Messages JSON: \(messagesJsonString)")
+
     // Check availability first
     let model = SystemLanguageModel.default
     let availability = model.availability
@@ -157,22 +217,34 @@ private func prepareConversationContext(
         throw ConversationError.noMessages
     }
 
+    print("Parsed \(messages.count) messages:")
+    for (index, message) in messages.enumerated() {
+        let toolCallsInfo =
+            message.tool_calls?.isEmpty == false
+            ? " | tool_calls: \(message.tool_calls!.count)" : ""
+        print(
+            "  [\(index)] \(message.role): '\(message.content ?? "nil")' | name: \(message.name ?? "nil") | tool_call_id: \(message.tool_call_id ?? "nil")\(toolCallsInfo)"
+        )
+    }
+    print("=== END DEBUG PARSING ===\n")
+
     // Determine conversation context based on message types
     let lastMessage = messages.last!
     let currentPrompt: String
     let previousMessages: [ChatMessage]
 
-    if lastMessage.role == "tool" {
-        // If last message is a tool result, include ALL messages in context and use empty prompt
-        currentPrompt = ""
-        previousMessages = messages
-    } else {
-        // Otherwise use the last message content as prompt and previous as context
-        currentPrompt = lastMessage.content ?? ""
-        previousMessages = messages.count > 1 ? Array(messages.dropLast()) : []
-    }
+    // if lastMessage.role == "tool" {
+    //     // If last message is a tool result, include ALL messages in context
+    //     // and use a prompt that encourages the model to respond to the tool result
+    //     // currentPrompt = "Please provide a natural response based on the tool result."
+    //     previousMessages = messages
+    // } else {
+    //     // Otherwise use the last message content as prompt and previous as context
+    //     currentPrompt = lastMessage.content ?? ""
+    //     previousMessages = messages.count > 1 ? Array(messages.dropLast()) : []
+    // }
 
-    let transcriptEntries = convertMessagesToTranscript(previousMessages)
+    let transcriptEntries = convertMessagesToTranscript(messages)
 
     // Create generation options
     var options = GenerationOptions()
@@ -186,7 +258,8 @@ private func prepareConversationContext(
     }
 
     return ConversationContext(
-        currentPrompt: currentPrompt,
+        // currentPrompt: currentPrompt,
+        currentPrompt: "",
         transcriptEntries: transcriptEntries,
         options: options
     )
@@ -224,7 +297,14 @@ private struct ChatMessage: Codable {
         content = try container.decodeIfPresent(String.self, forKey: .content)  // Made optional
         name = try container.decodeIfPresent(String.self, forKey: .name)
         tool_call_id = try container.decodeIfPresent(String.self, forKey: .tool_call_id)
-        tool_calls = nil  // Will be handled separately in conversion
+
+        // Properly decode tool_calls if present
+        if container.contains(.tool_calls) {
+            let toolCallsData = try container.decode(AnyCodable.self, forKey: .tool_calls)
+            tool_calls = toolCallsData.value as? [[String: Any]]
+        } else {
+            tool_calls = nil
+        }
     }
 
     func encode(to encoder: Encoder) throws {
@@ -240,10 +320,11 @@ private struct ChatMessage: Codable {
 private func convertMessagesToTranscript(_ messages: [ChatMessage]) -> [Transcript.Entry] {
     var entries: [Transcript.Entry] = []
 
-    for message in messages {
+    // Skip system messages - they will be handled separately with tools
+    let nonSystemMessages = messages.filter { $0.role.lowercased() != "system" }
+
+    for message in nonSystemMessages {
         switch message.role.lowercased() {
-        case "system":
-            entries.append(.instructions(createInstructions(from: message)))
         case "user":
             entries.append(.prompt(createPrompt(from: message)))
         case "assistant":
@@ -274,7 +355,24 @@ private func createPrompt(from message: ChatMessage) -> Transcript.Prompt {
 }
 
 private func createAssistantEntry(from message: ChatMessage) -> Transcript.Entry {
-    // Check if this is an assistant message with tool calls
+    // Check if this is an assistant message with tool calls in the tool_calls array
+    if let toolCalls = message.tool_calls,
+        !toolCalls.isEmpty,
+        toolCalls.allSatisfy({ call in
+            if let function = call["function"] as? [String: Any] {
+                return function["name"] != nil
+            }
+            return false
+        })
+    {
+        // Convert OpenAI tool calls to readable format
+        let summary = convertOpenAIToolCallsToText(toolCalls)
+        return .response(
+            Transcript.Response(
+                assetIDs: [], segments: [.text(Transcript.TextSegment(content: summary))]))
+    }
+
+    // Fallback: Check if this is an assistant message with tool calls embedded in content (legacy)
     if let content = message.content,
         let toolCallsData = content.data(using: .utf8),
         let toolCalls = try? JSONSerialization.jsonObject(with: toolCallsData) as? [[String: Any]],
@@ -809,6 +907,7 @@ public func appleAIGenerateUnified(
                     result = try await handleToolsMode(
                         context: context,
                         toolsJsonString: toolsStr,
+                        messagesJsonString: messagesJsonString,
                         streaming: false,
                         stopAfterToolCalls: stopAfterToolCalls,
                         onChunk: nil
@@ -857,6 +956,7 @@ public func appleAIGenerateUnified(
                     _ = try await handleToolsMode(
                         context: context,
                         toolsJsonString: toolsStr,
+                        messagesJsonString: messagesJsonString,
                         streaming: true,
                         stopAfterToolCalls: stopAfterToolCalls,
                         onChunk: onChunk
@@ -893,6 +993,7 @@ public func appleAIGenerateUnified(
 @available(macOS 26.0, *)
 private func handleBasicMode(context: ConversationContext) async throws -> String {
     let transcript = Transcript(entries: context.transcriptEntries)
+    debugPrintTranscript(transcript, prompt: context.currentPrompt)
     let session = LanguageModelSession(transcript: transcript)
     let response = try await session.respond(to: context.currentPrompt, options: context.options)
 
@@ -908,6 +1009,7 @@ private func handleBasicModeStream(
     onChunk: @convention(c) (UnsafePointer<CChar>?) -> Void
 ) async throws {
     let transcript = Transcript(entries: context.transcriptEntries)
+    debugPrintTranscript(transcript, prompt: context.currentPrompt)
     let session = LanguageModelSession(transcript: transcript)
 
     var prev = ""
@@ -943,6 +1045,7 @@ private func handleStructuredMode(
 
     // Create session without tools (structured generation doesn't use tools constructor)
     let transcript = Transcript(entries: context.transcriptEntries)
+    debugPrintTranscript(transcript, prompt: context.currentPrompt)
     let session = LanguageModelSession(transcript: transcript)
 
     // Generate structured response
@@ -970,6 +1073,7 @@ private func handleStructuredMode(
 private func handleToolsMode(
     context: ConversationContext,
     toolsJsonString: String,
+    messagesJsonString: String,  // Added to extract system message
     streaming: Bool,
     stopAfterToolCalls: Bool,  // New parameter
     onChunk: (@convention(c) (UnsafePointer<CChar>?) -> Void)?
@@ -997,11 +1101,33 @@ private func handleToolsMode(
         tools.append(proxy)
     }
 
-    // Build transcript with tools
+    // Build transcript with tools and system message
     var finalEntries = context.transcriptEntries
-    if !tools.isEmpty {
+
+    // Extract system message content from original messages
+    var systemContent = ""
+    if let messagesData = messagesJsonString.data(using: .utf8),
+        let messagesJson = try? JSONSerialization.jsonObject(with: messagesData) as? [[String: Any]]
+    {
+        // Find system message (may not be first)
+        for message in messagesJson {
+            if let role = message["role"] as? String,
+                role.lowercased() == "system",
+                let content = message["content"] as? String
+            {
+                systemContent = content
+                break
+            }
+        }
+    }
+
+    // Create instructions with both system message and tools
+    if !tools.isEmpty || !systemContent.isEmpty {
+        let textSegment =
+            systemContent.isEmpty
+            ? [] : [Transcript.Segment.text(Transcript.TextSegment(content: systemContent))]
         let instructions = Transcript.Instructions(
-            segments: [],
+            segments: textSegment,
             toolDefinitions: tools.map { tool in
                 Transcript.ToolDefinition(
                     name: tool.name, description: tool.description,
@@ -1011,6 +1137,7 @@ private func handleToolsMode(
     }
 
     let transcript = Transcript(entries: finalEntries)
+    debugPrintTranscript(transcript, prompt: context.currentPrompt)
     let session = LanguageModelSession(tools: tools, transcript: transcript)
 
     // Reset tool call collection
@@ -1063,7 +1190,7 @@ private func handleToolsMode(
 
         var prev = ""
         for try await cumulative in session.streamResponse(
-            to: context.currentPrompt, options: context.options
+            to: context.currentPrompt, options: context.options,
         ) {
             // Check for early termination only if enabled
             if stopAfterToolCalls {
