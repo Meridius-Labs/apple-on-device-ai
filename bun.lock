@@ -8,11 +8,12 @@
         "@ai-sdk/provider-utils": "3.0.0-alpha.15",
         "@types/json-schema": "^7.0.15",
         "json-schema": "^0.4.0",
-        "zod-to-json-schema": "^^3.24.5",
+        "zod-to-json-schema": "^3.24.5",
       },
       "devDependencies": {
         "@types/bun": "latest",
         "ai": "5.0.0-alpha.15",
+        "chalk": "^5.4.1",
         "tsdown": "^0.12.8",
         "typescript": "^5.0.0",
         "zod": "^3.25.67",
@@ -117,6 +118,8 @@
     "bun-types": ["bun-types@1.2.16", "", { "dependencies": { "@types/node": "*" } }, "sha512-ciXLrHV4PXax9vHvUrkvun9VPVGOVwbbbBF/Ev1cXz12lyEZMoJpIJABOfPcN9gDJRaiKF9MVbSygLg4NXu3/A=="],
 
     "cac": ["cac@6.7.14", "", {}, "sha512-b6Ilus+c3RrdDk+JhLKUAQfzzgLEPy6wcXqS7f/xe1EETvsDP6GORG7SFuOs6cID5YkqchW/LXZbX5bc8j7ZcQ=="],
+
+    "chalk": ["chalk@5.4.1", "", {}, "sha512-zgVZuo2WcZgfUEmsn6eO3kINexW8RAE4maiQ8QNs8CtpPCSyMiYsULR3HQYkm3w8FIA3SberyMJMSldGsW+U3w=="],
 
     "chokidar": ["chokidar@4.0.3", "", { "dependencies": { "readdirp": "^4.0.1" } }, "sha512-Qgzu8kfBvo+cA4962jnP1KkS6Dop5NS6g7R5LFYJr4b8Ub94PPQXUksCw9PvXoeXPRRddRNC5C1JQUR2SMGtnA=="],
 

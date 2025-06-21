@@ -159,6 +159,20 @@ private func describeTranscriptEntry(_ entry: Transcript.Entry) -> String {
     }
 }
 
+struct Guardrails {
+    static var developerProvided: LanguageModelSession.Guardrails {
+        var guardrails = LanguageModelSession.Guardrails.default
+
+        withUnsafeMutablePointer(to: &guardrails) { ptr in
+            let rawPtr = UnsafeMutableRawPointer(ptr)
+            let boolPtr = rawPtr.assumingMemoryBound(to: Bool.self)
+            boolPtr.pointee = false
+        }
+
+        return guardrails
+    }
+}
+
 // MARK: - Helper functions
 
 /// Centralized conversation preparation logic used by all message-based functions
@@ -229,9 +243,9 @@ private func prepareConversationContext(
     print("=== END DEBUG PARSING ===\n")
 
     // Determine conversation context based on message types
-    let lastMessage = messages.last!
-    let currentPrompt: String
-    let previousMessages: [ChatMessage]
+    // let lastMessage = messages.last!
+    // let currentPrompt: String
+    // let previousMessages: [ChatMessage]
 
     // if lastMessage.role == "tool" {
     //     // If last message is a tool result, include ALL messages in context
@@ -994,7 +1008,8 @@ public func appleAIGenerateUnified(
 private func handleBasicMode(context: ConversationContext) async throws -> String {
     let transcript = Transcript(entries: context.transcriptEntries)
     debugPrintTranscript(transcript, prompt: context.currentPrompt)
-    let session = LanguageModelSession(transcript: transcript)
+    let session = LanguageModelSession(
+        guardrails: Guardrails.developerProvided, transcript: transcript)
     let response = try await session.respond(to: context.currentPrompt, options: context.options)
 
     // Return as JSON for consistency
@@ -1010,7 +1025,8 @@ private func handleBasicModeStream(
 ) async throws {
     let transcript = Transcript(entries: context.transcriptEntries)
     debugPrintTranscript(transcript, prompt: context.currentPrompt)
-    let session = LanguageModelSession(transcript: transcript)
+    let session = LanguageModelSession(
+        guardrails: Guardrails.developerProvided, transcript: transcript)
 
     var prev = ""
     for try await cumulative in session.streamResponse(
@@ -1046,7 +1062,8 @@ private func handleStructuredMode(
     // Create session without tools (structured generation doesn't use tools constructor)
     let transcript = Transcript(entries: context.transcriptEntries)
     debugPrintTranscript(transcript, prompt: context.currentPrompt)
-    let session = LanguageModelSession(transcript: transcript)
+    let session = LanguageModelSession(
+        guardrails: Guardrails.developerProvided, transcript: transcript)
 
     // Generate structured response
     let response = try await session.respond(
@@ -1138,7 +1155,8 @@ private func handleToolsMode(
 
     let transcript = Transcript(entries: finalEntries)
     debugPrintTranscript(transcript, prompt: context.currentPrompt)
-    let session = LanguageModelSession(tools: tools, transcript: transcript)
+    let session = LanguageModelSession(
+        guardrails: Guardrails.developerProvided, tools: tools, transcript: transcript)
 
     // Reset tool call collection
     ToolCallCollector.shared.reset()

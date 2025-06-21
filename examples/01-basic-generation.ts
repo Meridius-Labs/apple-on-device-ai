@@ -5,7 +5,7 @@
  * with the Vercel AI SDK.
  */
 
-import { generateText } from "ai";
+import { generateText, streamText } from "ai";
 import { appleAI } from "../src/apple-ai-provider";
 
 async function basicGeneration() {
