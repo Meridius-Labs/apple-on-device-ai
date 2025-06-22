@@ -580,63 +580,6 @@ public func appleAIRegisterToolCallback(_ cb: JSToolCallback?) {
     jsToolCallback = cb
 }
 
-extension FoundationModels.Transcript.ToolCall {
-    /// A private mirror of the memory layout of `FoundationModels.Transcript.ToolCall`.
-    /// This struct must be kept in sync with the target system framework's version.
-    private struct ToolCallMirror {
-        // 0x00 – Swift String (16 B)
-        let id: String
-        // 0x10 – Swift String (16 B)
-        let toolName: String
-        // 0x20 – GeneratedContent (40 B)
-        let arguments: GeneratedContent
-        // 0x48 – Swift String (16 B)
-        let description: String
-    }
-
-    /// The private, unsafe initializer that performs the memory transmutation.
-    private init(transmuting mirror: ToolCallMirror) {
-        // This precondition is the critical safety guarantee.
-        let mirrorSize = MemoryLayout<ToolCallMirror>.size
-        let toolCallSize = MemoryLayout<Self>.size
-        let mirrorAlignment = MemoryLayout<ToolCallMirror>.alignment
-        let toolCallAlignment = MemoryLayout<Self>.alignment
-
-        precondition(
-            mirrorSize == toolCallSize && mirrorAlignment == toolCallAlignment,
-            "ToolCall.Mirror layout does not match FoundationModels.Transcript.ToolCall. Please update the private Mirror to match the system framework version."
-        )
-
-        self = unsafeBitCast(mirror, to: Self.self)
-    }
-
-    /// Creates an instance of `FoundationModels.Transcript.ToolCall`.
-    ///
-    /// This initializer provides a safe, public interface for a type that lacks a public
-    /// initializer, relying on a verified memory layout transmutation.
-    ///
-    /// - Parameters:
-    ///   - id: The unique identifier for the tool call.
-    ///   - toolName: The name of the tool being called.
-    ///   - arguments: The arguments for the tool, as `GeneratedContent`.
-    ///   - description: An optional description for the tool call. Defaults to an empty string.
-    public init(
-        id: String,
-        toolName: String,
-        arguments: GeneratedContent,
-        description: String = ""  // Expose the new field with a safe default.
-    ) {
-        let mirror = ToolCallMirror(
-            id: id,
-            toolName: toolName,
-            arguments: arguments,
-            description: description
-        )
-
-        self.init(transmuting: mirror)
-    }
-}
-
 // MARK: - Proxy Tool implementation bridging to JS
 
 @available(macOS 26.0, *)
@@ -774,6 +717,65 @@ private struct AnyCodable: Codable {
         default:
             try container.encodeNil()
         }
+    }
+}
+
+// MARK: - Tool Call Mirror (because apple decided to make it private)
+
+extension FoundationModels.Transcript.ToolCall {
+    /// A private mirror of the memory layout of `FoundationModels.Transcript.ToolCall`.
+    /// This struct must be kept in sync with the target system framework's version.
+    private struct ToolCallMirror {
+        // 0x00 – Swift String (16 B)
+        let id: String
+        // 0x10 – Swift String (16 B)
+        let toolName: String
+        // 0x20 – GeneratedContent (40 B)
+        let arguments: GeneratedContent
+        // 0x48 – Swift String (16 B)
+        let description: String
+    }
+
+    /// The private, unsafe initializer that performs the memory transmutation.
+    private init(transmuting mirror: ToolCallMirror) {
+        // This precondition is the critical safety guarantee.
+        let mirrorSize = MemoryLayout<ToolCallMirror>.size
+        let toolCallSize = MemoryLayout<Self>.size
+        let mirrorAlignment = MemoryLayout<ToolCallMirror>.alignment
+        let toolCallAlignment = MemoryLayout<Self>.alignment
+
+        precondition(
+            mirrorSize == toolCallSize && mirrorAlignment == toolCallAlignment,
+            "ToolCall.Mirror layout does not match FoundationModels.Transcript.ToolCall. Please update the private Mirror to match the system framework version."
+        )
+
+        self = unsafeBitCast(mirror, to: Self.self)
+    }
+
+    /// Creates an instance of `FoundationModels.Transcript.ToolCall`.
+    ///
+    /// This initializer provides a safe, public interface for a type that lacks a public
+    /// initializer, relying on a verified memory layout transmutation.
+    ///
+    /// - Parameters:
+    ///   - id: The unique identifier for the tool call.
+    ///   - toolName: The name of the tool being called.
+    ///   - arguments: The arguments for the tool, as `GeneratedContent`.
+    ///   - description: An optional description for the tool call. Defaults to an empty string.
+    public init(
+        id: String,
+        toolName: String,
+        arguments: GeneratedContent,
+        description: String = ""  // Expose the new field with a safe default.
+    ) {
+        let mirror = ToolCallMirror(
+            id: id,
+            toolName: toolName,
+            arguments: arguments,
+            description: description
+        )
+
+        self.init(transmuting: mirror)
     }
 }
 
