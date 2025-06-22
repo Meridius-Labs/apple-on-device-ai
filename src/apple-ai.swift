@@ -104,7 +104,12 @@ public func appleAIFreeString(ptr: UnsafeMutablePointer<CChar>?) {
 
 // MARK: - Debug Logging
 
+// Set to `true` during development to emit verbose transcript and parsing logs.
+private let DEBUG_LOGS = ProcessInfo.processInfo.environment["APPLE_AI_SWIFT_DEBUG_LOGS"] != nil
+
 private func debugPrintTranscript(_ transcript: Transcript, prompt: String) {
+    guard DEBUG_LOGS else { return }
+
     print("\n=== DEBUG: TRANSCRIPT SENT TO APPLE INTELLIGENCE ===")
     print("Current Prompt: '\(prompt)'")
     print("Transcript Entries (\(transcript.entries.count)):")
@@ -135,6 +140,12 @@ private func describeTranscriptEntry(_ entry: Transcript.Entry) -> String {
             return nil
         }.joined(separator: " ")
         return "PROMPT: '\(content)'"
+
+    case .toolCalls(let toolCalls):
+        let callsSummary = toolCalls.map { call in
+            "\(call.toolName)(args)"
+        }.joined(separator: ", ")
+        return "TOOL_CALLS: [\(callsSummary)]"
 
     case .response(let response):
         let content = response.segments.compactMap { segment in
@@ -193,8 +204,10 @@ private func prepareConversationContext(
     temperature: Double,
     maxTokens: Int32
 ) throws -> ConversationContext {
-    print("\n=== DEBUG: PARSING MESSAGES ===")
-    print("Messages JSON: \(messagesJsonString)")
+    if DEBUG_LOGS {
+        print("\n=== DEBUG: PARSING MESSAGES ===")
+        print("Messages JSON: \(messagesJsonString)")
+    }
 
     // Check availability first
     let model = SystemLanguageModel.default
@@ -231,16 +244,18 @@ private func prepareConversationContext(
         throw ConversationError.noMessages
     }
 
-    print("Parsed \(messages.count) messages:")
-    for (index, message) in messages.enumerated() {
-        let toolCallsInfo =
-            message.tool_calls?.isEmpty == false
-            ? " | tool_calls: \(message.tool_calls!.count)" : ""
-        print(
-            "  [\(index)] \(message.role): '\(message.content ?? "nil")' | name: \(message.name ?? "nil") | tool_call_id: \(message.tool_call_id ?? "nil")\(toolCallsInfo)"
-        )
+    if DEBUG_LOGS {
+        print("Parsed \(messages.count) messages:")
+        for (index, message) in messages.enumerated() {
+            let toolCallsInfo =
+                message.tool_calls?.isEmpty == false
+                ? " | tool_calls: \(message.tool_calls!.count)" : ""
+            print(
+                "  [\(index)] \(message.role): '\(message.content ?? "nil")' | name: \(message.name ?? "nil") | tool_call_id: \(message.tool_call_id ?? "nil")\(toolCallsInfo)"
+            )
+        }
+        print("=== END DEBUG PARSING ===\n")
     }
-    print("=== END DEBUG PARSING ===\n")
 
     // Determine conversation context – separate the latest user/assistant message
     let lastMessage = messages.last!
@@ -249,7 +264,7 @@ private func prepareConversationContext(
 
     if lastMessage.role.lowercased() == "tool" {
         // Last message is a tool result – keep it in transcript and ask for natural follow-up
-        currentPrompt = "Please provide a response based on the tool result."
+        currentPrompt = ""
     } else if lastMessage.role.lowercased() == "user" {
         // Typical chat flow – use the user's content as the new prompt
         currentPrompt = lastMessage.content ?? ""
@@ -336,6 +351,10 @@ private struct ChatMessage: Codable {
 private func convertMessagesToTranscript(_ messages: [ChatMessage]) -> [Transcript.Entry] {
     var entries: [Transcript.Entry] = []
 
+    // Deduplicate tool outputs that share the same id (the JS side sometimes
+    // pushes identical `tool` role messages twice).
+    var seenToolOutputIDs = Set<String>()
+
     // Skip system messages - they will be handled separately with tools
     let nonSystemMessages = messages.filter { $0.role.lowercased() != "system" }
 
@@ -347,7 +366,15 @@ private func convertMessagesToTranscript(_ messages: [ChatMessage]) -> [Transcri
             entries.append(createAssistantEntry(from: message))
         case "tool":
             // Handle tool messages that may return multiple entries
-            let toolEntries = createToolOutputEntry(from: message)
+            let toolEntries = createToolOutputEntry(from: message).filter { entry in
+                if case .toolOutput(let output) = entry {
+                    if seenToolOutputIDs.contains(output.id) {
+                        return false
+                    }
+                    seenToolOutputIDs.insert(output.id)
+                }
+                return true
+            }
             entries.append(contentsOf: toolEntries)
         default:
             entries.append(.prompt(createPrompt(from: message)))  // Fallback to user prompt
@@ -455,11 +482,15 @@ private func convertOpenAIToolCalls(_ toolCalls: [[String: Any]]) -> Transcript.
             arguments = args
         }
 
+        // Get description if available (usually not present)
+        let description = function["description"] as? String ?? ""
+
         // Create GeneratedContent from arguments
         guard let content = createGeneratedContentFromDictionary(arguments) else { return nil }
 
         // Use the unsafe tool call creation function
-        return createUnsafeToolCall(id: id, toolName: name, arguments: content)
+        return Transcript.ToolCall(
+            id: id, toolName: name, arguments: content, description: description)
     }
 
     return Transcript.ToolCalls(calls)
@@ -549,27 +580,61 @@ public func appleAIRegisterToolCallback(_ cb: JSToolCallback?) {
     jsToolCallback = cb
 }
 
-// Now you can define the final ToolCall mirror.
-public struct ToolCallMirror {
-    // Inferred to be at offset 0x0
-    public var id: String
+extension FoundationModels.Transcript.ToolCall {
+    /// A private mirror of the memory layout of `FoundationModels.Transcript.ToolCall`.
+    /// This struct must be kept in sync with the target system framework's version.
+    private struct ToolCallMirror {
+        // 0x00 – Swift String (16 B)
+        let id: String
+        // 0x10 – Swift String (16 B)
+        let toolName: String
+        // 0x20 – GeneratedContent (40 B)
+        let arguments: GeneratedContent
+        // 0x48 – Swift String (16 B)
+        let description: String
+    }
 
-    // Inferred to be at offset 0x10
-    public var toolName: String
+    /// The private, unsafe initializer that performs the memory transmutation.
+    private init(transmuting mirror: ToolCallMirror) {
+        // This precondition is the critical safety guarantee.
+        let mirrorSize = MemoryLayout<ToolCallMirror>.size
+        let toolCallSize = MemoryLayout<Self>.size
+        let mirrorAlignment = MemoryLayout<ToolCallMirror>.alignment
+        let toolCallAlignment = MemoryLayout<Self>.alignment
 
-    // Inferred to start at offset 0x20
-    public var arguments: GeneratedContent  // This struct is 40 bytes
-}
+        precondition(
+            mirrorSize == toolCallSize && mirrorAlignment == toolCallAlignment,
+            "ToolCall.Mirror layout does not match FoundationModels.Transcript.ToolCall. Please update the private Mirror to match the system framework version."
+        )
 
-// To perform the final transmutation:
-func createUnsafeToolCall(id: String, toolName: String, arguments: GeneratedContent)
-    -> FoundationModels.Transcript.ToolCall
-{
-    let mirror = ToolCallMirror(id: id, toolName: toolName, arguments: arguments)
+        self = unsafeBitCast(mirror, to: Self.self)
+    }
 
-    // This assumes the total size and alignment of ToolCallMirror matches the real one.
-    // Size of ToolCall = 16 (id) + 16 (name) + 40 (arguments) = 72 bytes.
-    return unsafeBitCast(mirror, to: FoundationModels.Transcript.ToolCall.self)
+    /// Creates an instance of `FoundationModels.Transcript.ToolCall`.
+    ///
+    /// This initializer provides a safe, public interface for a type that lacks a public
+    /// initializer, relying on a verified memory layout transmutation.
+    ///
+    /// - Parameters:
+    ///   - id: The unique identifier for the tool call.
+    ///   - toolName: The name of the tool being called.
+    ///   - arguments: The arguments for the tool, as `GeneratedContent`.
+    ///   - description: An optional description for the tool call. Defaults to an empty string.
+    public init(
+        id: String,
+        toolName: String,
+        arguments: GeneratedContent,
+        description: String = ""  // Expose the new field with a safe default.
+    ) {
+        let mirror = ToolCallMirror(
+            id: id,
+            toolName: toolName,
+            arguments: arguments,
+            description: description
+        )
+
+        self.init(transmuting: mirror)
+    }
 }
 
 // MARK: - Proxy Tool implementation bridging to JS

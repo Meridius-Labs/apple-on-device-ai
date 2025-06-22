@@ -1,5 +1,5 @@
 import { appleAI } from "../src";
-import { streamText, tool } from "ai";
+import { stepCountIs, streamText, tool } from "ai";
 import type { ModelMessage } from "ai";
 import { z } from "zod";
 
@@ -35,7 +35,7 @@ async function main() {
           .describe("Number of results to return"),
       }),
       async execute(input) {
-        console.log("[TS] TOOL CALLED", "Web Search", input);
+        console.log("[TOOL] Web Search", input);
 
         // Mock search results based on query
         const mockResults = {
@@ -77,7 +77,7 @@ async function main() {
           .describe("Desired summary length"),
       }),
       async execute(input) {
-        console.log("[TS] TOOL CALLED", "Summarize Text", {
+        console.log("[TOOL] Summarize Text", {
           textLength: input.text.length,
           length: input.length,
         });
@@ -105,9 +105,7 @@ async function main() {
         text: z.string().describe("The text to make more concise"),
       }),
       async execute(input) {
-        console.log("[TS] TOOL CALLED", "Make Concise", {
-          textLength: input.text.length,
-        });
+        console.log("[TOOL] Make Concise", { textLength: input.text.length });
 
         // Mock concise version by removing common filler words and shortening
         const text = input.text
@@ -135,7 +133,7 @@ async function main() {
           .describe("Maximum number of bullet points"),
       }),
       async execute(input) {
-        console.log("[TS] TOOL CALLED", "Create Bullet Points", {
+        console.log("[TOOL] Create Bullet Points", {
           textLength: input.text.length,
           maxPoints: input.max_points,
         });
@@ -162,7 +160,7 @@ async function main() {
         topic2: z.string().describe("Second topic or information to compare"),
       }),
       async execute(input) {
-        console.log("[TS] TOOL CALLED", "Compare Topics", input);
+        console.log("[TOOL] Compare Topics", input);
 
         return `Comparison between "${input.topic1}" and "${input.topic2}":
 
@@ -188,6 +186,7 @@ Differences:
     try {
       // Use streamText with the full conversation - this properly handles tool calls
       const result = streamText({
+        stopWhen: stepCountIs(5),
         model: appleAI("apple-intelligence"),
         messages: messages,
         tools: tools,
@@ -209,6 +208,18 @@ Differences:
                 toolCallId: chunk.toolCallId,
                 toolName: chunk.toolName,
                 output: chunk.output,
+              },
+            ],
+          });
+        } else if (chunk.type === "tool-call") {
+          messages.push({
+            role: "assistant",
+            content: [
+              {
+                type: "tool-call",
+                toolCallId: chunk.toolCallId,
+                input: chunk.input,
+                toolName: chunk.toolName,
               },
             ],
           });
