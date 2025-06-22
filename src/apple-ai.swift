@@ -242,23 +242,26 @@ private func prepareConversationContext(
     }
     print("=== END DEBUG PARSING ===\n")
 
-    // Determine conversation context based on message types
-    // let lastMessage = messages.last!
-    // let currentPrompt: String
-    // let previousMessages: [ChatMessage]
+    // Determine conversation context – separate the latest user/assistant message
+    let lastMessage = messages.last!
+    var currentPrompt: String = ""
+    var previousMessages: [ChatMessage] = messages
 
-    // if lastMessage.role == "tool" {
-    //     // If last message is a tool result, include ALL messages in context
-    //     // and use a prompt that encourages the model to respond to the tool result
-    //     // currentPrompt = "Please provide a natural response based on the tool result."
-    //     previousMessages = messages
-    // } else {
-    //     // Otherwise use the last message content as prompt and previous as context
-    //     currentPrompt = lastMessage.content ?? ""
-    //     previousMessages = messages.count > 1 ? Array(messages.dropLast()) : []
-    // }
+    if lastMessage.role.lowercased() == "tool" {
+        // Last message is a tool result – keep it in transcript and ask for natural follow-up
+        currentPrompt = "Please provide a response based on the tool result."
+    } else if lastMessage.role.lowercased() == "user" {
+        // Typical chat flow – use the user's content as the new prompt
+        currentPrompt = lastMessage.content ?? ""
+        // Exclude this prompt from the transcript so the model treats it as new input
+        previousMessages.removeLast()
+    } else {
+        // For assistant or other roles, keep entire history and set an empty prompt
+        currentPrompt = ""
+    }
 
-    let transcriptEntries = convertMessagesToTranscript(messages)
+    // Build transcript entries from the remaining messages
+    let transcriptEntries = convertMessagesToTranscript(previousMessages)
 
     // Create generation options
     var options = GenerationOptions()
@@ -272,8 +275,7 @@ private func prepareConversationContext(
     }
 
     return ConversationContext(
-        // currentPrompt: currentPrompt,
-        currentPrompt: "",
+        currentPrompt: currentPrompt,
         transcriptEntries: transcriptEntries,
         options: options
     )
@@ -380,10 +382,8 @@ private func createAssistantEntry(from message: ChatMessage) -> Transcript.Entry
         })
     {
         // Convert OpenAI tool calls to readable format
-        let summary = convertOpenAIToolCallsToText(toolCalls)
-        return .response(
-            Transcript.Response(
-                assetIDs: [], segments: [.text(Transcript.TextSegment(content: summary))]))
+        let toolCalls = convertOpenAIToolCalls(toolCalls)
+        return .toolCalls(toolCalls)
     }
 
     // Fallback: Check if this is an assistant message with tool calls embedded in content (legacy)
@@ -398,34 +398,71 @@ private func createAssistantEntry(from message: ChatMessage) -> Transcript.Entry
             return false
         })
     {
-        // Convert OpenAI tool calls to readable format
-        let summary = convertOpenAIToolCallsToText(toolCalls)
+        // For legacy format, convert to response with tool calls info as text
+        let toolCallsSummary = toolCalls.compactMap { call -> String? in
+            guard let function = call["function"] as? [String: Any],
+                let name = function["name"] as? String
+            else { return nil }
+
+            if let argsString = function["arguments"] as? String,
+                let argsData = argsString.data(using: .utf8),
+                let args = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any]
+            {
+                let argsList = args.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
+                return "\(name)(\(argsList))"
+            }
+
+            return "\(name)()"
+        }.joined(separator: ", ")
+
         return .response(
             Transcript.Response(
-                assetIDs: [], segments: [.text(Transcript.TextSegment(content: summary))]))
+                assetIDs: [], segments: [.text(Transcript.TextSegment(content: toolCallsSummary))]))
     }
 
     return .response(createResponse(from: message))
 }
 
-private func convertOpenAIToolCallsToText(_ toolCalls: [[String: Any]]) -> String {
-    let calls = toolCalls.compactMap { call -> String? in
-        guard let function = call["function"] as? [String: Any],
+// Helper to create GeneratedContent from dictionary
+@available(macOS 26.0, *)
+private func createGeneratedContentFromDictionary(_ dict: [String: Any]) -> GeneratedContent? {
+    // For tool arguments, we'll create a simple JSON string representation
+    // This is a workaround since KeyValuePairs cannot be created dynamically
+    guard let jsonData = try? JSONSerialization.data(withJSONObject: dict, options: []),
+        let jsonString = String(data: jsonData, encoding: .utf8)
+    else {
+        return nil
+    }
+
+    // Create GeneratedContent with the JSON string
+    // This works because GeneratedContent can hold a String value
+    return GeneratedContent(jsonString)
+}
+
+private func convertOpenAIToolCalls(_ toolCalls: [[String: Any]]) -> Transcript.ToolCalls {
+    let calls = toolCalls.compactMap { call -> FoundationModels.Transcript.ToolCall? in
+        guard let id = call["id"] as? String,
+            let function = call["function"] as? [String: Any],
             let name = function["name"] as? String
         else { return nil }
 
+        // Parse arguments
+        var arguments: [String: Any] = [:]
         if let argsString = function["arguments"] as? String,
             let argsData = argsString.data(using: .utf8),
             let args = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any]
         {
-            let argsList = args.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
-            return "\(name)(\(argsList))"
+            arguments = args
         }
 
-        return "\(name)()"
+        // Create GeneratedContent from arguments
+        guard let content = createGeneratedContentFromDictionary(arguments) else { return nil }
+
+        // Use the unsafe tool call creation function
+        return createUnsafeToolCall(id: id, toolName: name, arguments: content)
     }
 
-    return calls.joined(separator: ", ")
+    return Transcript.ToolCalls(calls)
 }
 
 private func createResponse(from message: ChatMessage) -> Transcript.Response {
@@ -510,6 +547,29 @@ private var jsToolCallback: JSToolCallback?
 @_cdecl("apple_ai_register_tool_callback")
 public func appleAIRegisterToolCallback(_ cb: JSToolCallback?) {
     jsToolCallback = cb
+}
+
+// Now you can define the final ToolCall mirror.
+public struct ToolCallMirror {
+    // Inferred to be at offset 0x0
+    public var id: String
+
+    // Inferred to be at offset 0x10
+    public var toolName: String
+
+    // Inferred to start at offset 0x20
+    public var arguments: GeneratedContent  // This struct is 40 bytes
+}
+
+// To perform the final transmutation:
+func createUnsafeToolCall(id: String, toolName: String, arguments: GeneratedContent)
+    -> FoundationModels.Transcript.ToolCall
+{
+    let mirror = ToolCallMirror(id: id, toolName: toolName, arguments: arguments)
+
+    // This assumes the total size and alignment of ToolCallMirror matches the real one.
+    // Size of ToolCall = 16 (id) + 16 (name) + 40 (arguments) = 72 bytes.
+    return unsafeBitCast(mirror, to: FoundationModels.Transcript.ToolCall.self)
 }
 
 // MARK: - Proxy Tool implementation bridging to JS

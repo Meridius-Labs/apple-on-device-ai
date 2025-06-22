@@ -1,10 +1,47 @@
 import Foundation
 import FoundationModels
 
+struct Guardrails {
+  static var developerProvided: LanguageModelSession.Guardrails {
+    var guardrails = LanguageModelSession.Guardrails.default
+
+    withUnsafeMutablePointer(to: &guardrails) { ptr in
+      let rawPtr = UnsafeMutableRawPointer(ptr)
+      let boolPtr = rawPtr.assumingMemoryBound(to: Bool.self)
+      boolPtr.pointee = false
+    }
+
+    return guardrails
+  }
+}
+
+// Now you can define the final ToolCall mirror.
+public struct ToolCallMirror {
+  // Inferred to be at offset 0x0
+  public var id: String
+
+  // Inferred to be at offset 0x10
+  public var toolName: String
+
+  // Inferred to start at offset 0x20
+  public var arguments: GeneratedContent  // This struct is 40 bytes
+}
+
+// To perform the final transmutation:
+func createUnsafeToolCall(id: String, toolName: String, arguments: GeneratedContent)
+  -> FoundationModels.Transcript.ToolCall
+{
+  let mirror = ToolCallMirror(id: id, toolName: toolName, arguments: arguments)
+
+  // This assumes the total size and alignment of ToolCallMirror matches the real one.
+  // Size of ToolCall = 16 (id) + 16 (name) + 40 (arguments) = 72 bytes.
+  return unsafeBitCast(mirror, to: FoundationModels.Transcript.ToolCall.self)
+}
+
 @available(macOS 26.0, *)
 struct WebSearchTool: Tool {
   let name = "web_search"
-  let description = "Search the web for information on any topic"
+  let description = "Use this tool when you need to search the web for information on any topic"
 
   @Generable
   struct Arguments {
@@ -32,19 +69,14 @@ struct WebSearchTool: Tool {
       }
     }
 
-    let searchResult = GeneratedContent(properties: [
-      "query": arguments.query,
-      "result": result,
-    ])
-
-    return ToolOutput(searchResult)
+    return ToolOutput(result)
   }
 }
 
 @available(macOS 26.0, *)
 struct SummarizeTool: Tool {
   let name = "summarize_text"
-  let description = "Summarize given text to make it shorter"
+  let description = "Use this tool to summarize given text to make it shorter"
 
   @Generable
   struct Arguments {
@@ -58,12 +90,69 @@ struct SummarizeTool: Tool {
     let words = arguments.text.split(separator: " ")
     let summary = words.prefix(20).joined(separator: " ")
 
-    let summaryResult = GeneratedContent(properties: [
-      "original_length": arguments.text.count,
-      "summary": "\(summary)...",
-    ])
+    return ToolOutput(summary)
+  }
+}
 
-    return ToolOutput(summaryResult)
+// MARK: - Debug Logging
+
+private func debugPrintTranscript(_ transcript: Transcript) {
+  print("\n=== DEBUG: TRANSCRIPT SENT TO APPLE INTELLIGENCE ===")
+  print("Transcript Entries (\(transcript.entries.count)):")
+
+  for (index, entry) in transcript.entries.enumerated() {
+    print("  [\(index)] \(describeTranscriptEntry(entry))")
+  }
+  print("=== END DEBUG TRANSCRIPT ===\n")
+}
+
+private func describeTranscriptEntry(_ entry: Transcript.Entry) -> String {
+  switch entry {
+  case .instructions(let instructions):
+    let toolNames = instructions.toolDefinitions.map { $0.name }.joined(separator: ", ")
+    let content = instructions.segments.compactMap { segment in
+      if case .text(let textSegment) = segment {
+        return textSegment.content
+      }
+      return nil
+    }.joined(separator: " ")
+    return "INSTRUCTIONS: '\(content)' | Tools: [\(toolNames)]"
+
+  case .prompt(let prompt):
+    let content = prompt.segments.compactMap { segment in
+      if case .text(let textSegment) = segment {
+        return textSegment.content
+      }
+      return nil
+    }.joined(separator: " ")
+    return "PROMPT: '\(content)'"
+
+  case .response(let response):
+    let content = response.segments.compactMap { segment in
+      if case .text(let textSegment) = segment {
+        return textSegment.content
+      }
+      return nil
+    }.joined(separator: " ")
+    return "RESPONSE: '\(content)'"
+
+  case .toolOutput(let toolOutput):
+    let content = toolOutput.segments.compactMap { segment in
+      if case .text(let textSegment) = segment {
+        return textSegment.content
+      }
+      return nil
+    }.joined(separator: " ")
+    return "TOOL_OUTPUT [\(toolOutput.toolName)]: '\(content)'"
+
+  case .toolCalls(let toolCalls):
+    let content = toolCalls.map { call in
+      return "\(call.toolName) (\(call.arguments))"
+    }
+    return "TOOL_CALLS: [\(content.joined(separator: ", "))]"
+
+  @unknown default:
+    return "UNKNOWN_ENTRY"
   }
 }
 
@@ -81,17 +170,17 @@ func runDirectTest() async {
 
   // Create session with tools and instructions (Apple's way)
   let session = LanguageModelSession(
+    guardrails: Guardrails.developerProvided,
     tools: [WebSearchTool(), SummarizeTool()],
     instructions:
-      "You are a helpful assistant with access to web search and text processing tools. Use tools when requested by the user."
+      "You are a helpful assistant with access to web search and text processing tools. Use the appropriate tools when asked."
   )
 
   // Test conversations
   let conversations = [
-    "Search for information about quantum computing",
+    "Search the web for information about quantum computing",
     "Can you summarize that information?",
-    "Search for AI developments",
-    "Compare quantum computing with AI",
+    "Search the web for AI developments",
   ]
 
   for userMessage in conversations {
@@ -110,8 +199,10 @@ func runDirectTest() async {
 
     print("\n" + String(repeating: "─", count: 50) + "\n")
   }
+
+  print("🔍 Transcript:")
   // log the transcript
-  print(session.transcript)
+  debugPrintTranscript(session.transcript)
 
   print("✅ Direct Swift test completed")
 }
