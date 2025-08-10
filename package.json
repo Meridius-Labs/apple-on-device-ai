@@ -1,6 +1,6 @@
 {
   "name": "@meridius-labs/apple-on-device-ai",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "description": "TypeScript library for accessing Apple's on-device foundation models (Apple Intelligence) with full Vercel AI SDK compatibility",
   "main": "dist/index.js",
   "module": "dist/index.mjs",

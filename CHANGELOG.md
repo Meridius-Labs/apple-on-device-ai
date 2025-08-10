@@ -1,3 +1,8 @@
+## [1.6.2] - 2025-08-10
+
+### Changes
+- fix: add native modules after beta 5
+
 ## [1.6.1] - 2025-08-10
 
 ### Changes
