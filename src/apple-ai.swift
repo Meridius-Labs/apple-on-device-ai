@@ -171,8 +171,8 @@ private func describeTranscriptEntry(_ entry: Transcript.Entry) -> String {
 }
 
 struct Guardrails {
-    static var developerProvided: LanguageModelSession.Guardrails {
-        var guardrails = LanguageModelSession.Guardrails.default
+    static var developerProvided: SystemLanguageModel.Guardrails {
+        var guardrails = SystemLanguageModel.Guardrails.default
 
         withUnsafeMutablePointer(to: &guardrails) { ptr in
             let rawPtr = UnsafeMutableRawPointer(ptr)
@@ -929,28 +929,32 @@ private func convertJSONSchemaToDynamic(_ dict: [String: Any], name: String? = n
 
 @available(macOS 26.0, *)
 private func generatedContentToJSON(_ content: GeneratedContent) -> Any {
-    // Try object
-    if let dict = try? content.properties() {
+    switch content.kind {
+    case .structure(let properties, _):
         var result: [String: Any] = [:]
-        for (k, v) in dict {
-            result[k] = generatedContentToJSON(v)
+        for (key, value) in properties {
+            result[key] = generatedContentToJSON(value)
         }
         return result
+        
+    case .array(let elements):
+        return elements.map { generatedContentToJSON($0) }
+        
+    case .string(let stringValue):
+        return stringValue
+        
+    case .number(let numberValue):
+        return numberValue
+        
+    case .bool(let boolValue):
+        return boolValue
+        
+    case .null:
+        return NSNull()
+        
+    @unknown default:
+        return content.jsonString
     }
-
-    // Try array
-    if let arr = try? content.elements() {
-        return arr.map { generatedContentToJSON($0) }
-    }
-
-    // Try basic scalar types
-    if let str = try? content.value(String.self) { return str }
-    if let intVal = try? content.value(Int.self) { return intVal }
-    if let dbl = try? content.value(Double.self) { return dbl }
-    if let boolVal = try? content.value(Bool.self) { return boolVal }
-
-    // Fallback to description
-    return String(describing: content)
 }
 
 @available(macOS 26.0, *)
@@ -1191,8 +1195,9 @@ public func appleAIGenerateUnified(
 private func handleBasicMode(context: ConversationContext) async throws -> String {
     let transcript = Transcript(entries: context.transcriptEntries)
     debugPrintTranscript(transcript, prompt: context.currentPrompt)
+    let model = SystemLanguageModel(guardrails: Guardrails.developerProvided)
     let session = LanguageModelSession(
-        guardrails: Guardrails.developerProvided, transcript: transcript)
+        model: model, transcript: transcript)
     let response = try await session.respond(to: context.currentPrompt, options: context.options)
 
     // Return as JSON for consistency
@@ -1208,15 +1213,16 @@ private func handleBasicModeStream(
 ) async throws {
     let transcript = Transcript(entries: context.transcriptEntries)
     debugPrintTranscript(transcript, prompt: context.currentPrompt)
+    let model = SystemLanguageModel(guardrails: Guardrails.developerProvided)
     let session = LanguageModelSession(
-        guardrails: Guardrails.developerProvided, transcript: transcript)
+        model: model, transcript: transcript)
 
     var prev = ""
     for try await cumulative in session.streamResponse(
         to: context.currentPrompt, options: context.options)
     {
-        let delta = String(cumulative.dropFirst(prev.count))
-        prev = cumulative
+        let delta = String(cumulative.content.dropFirst(prev.count))
+        prev = cumulative.content
         guard !delta.isEmpty else { continue }
 
         delta.withCString { cStr in
@@ -1245,8 +1251,9 @@ private func handleStructuredMode(
     // Create session without tools (structured generation doesn't use tools constructor)
     let transcript = Transcript(entries: context.transcriptEntries)
     debugPrintTranscript(transcript, prompt: context.currentPrompt)
+    let model = SystemLanguageModel(guardrails: Guardrails.developerProvided)
     let session = LanguageModelSession(
-        guardrails: Guardrails.developerProvided, transcript: transcript)
+        model: model, transcript: transcript)
 
     // Generate structured response
     let response = try await session.respond(
@@ -1338,8 +1345,9 @@ private func handleToolsMode(
 
     let transcript = Transcript(entries: finalEntries)
     debugPrintTranscript(transcript, prompt: context.currentPrompt)
+    let model = SystemLanguageModel(guardrails: Guardrails.developerProvided)
     let session = LanguageModelSession(
-        guardrails: Guardrails.developerProvided, tools: tools, transcript: transcript)
+        model: model, tools: tools, transcript: transcript)
 
     // Reset tool call collection
     ToolCallCollector.shared.reset()
@@ -1401,8 +1409,8 @@ private func handleToolsMode(
                 }
             }
 
-            let delta = String(cumulative.dropFirst(prev.count))
-            prev = cumulative
+            let delta = String(cumulative.content.dropFirst(prev.count))
+            prev = cumulative.content
             guard !delta.isEmpty else { continue }
 
             delta.withCString { cStr in
