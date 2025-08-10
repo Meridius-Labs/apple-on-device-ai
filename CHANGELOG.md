@@ -1,3 +1,9 @@
+## [1.6.1] - 2025-08-10
+
+### Changes
+- Merge pull request #6 from gaodeng/main
+- fix [MacOS 26 dev beta 5] Symbol not found
+
 ## [1.6.0] - 2025-07-22
 
 ### Changes
